@@ -3,19 +3,21 @@ import torch
 import torch as T
 import torch.nn as nn
 
+
 class ChemVAE(nn.Module):
 
-    def __init__(self, input_dim: int = 13, latent_dim: int = 4):
+    def __init__(self, input_dim: int, latent_dim: int = 4, hidden_dim: dict = 8):
 
         super(ChemVAE, self).__init__()
         self._input_dim = input_dim
         self._latent_dim = latent_dim
+        self._hidden_dim = hidden_dim
 
-        self.fc1 = nn.Linear(self._input_dim, 32)
-        self.fc2a = nn.Linear(32, self._latent_dim)
-        self.fc2b = nn.Linear(32, self._latent_dim)
-        self.fc3 = nn.Linear(self._latent_dim, 32)
-        self.fc4 = nn.Linear(32, self._input_dim)
+        self.fc1 = nn.Linear(self._input_dim, self._hidden_dim)
+        self.fc2a = nn.Linear(self._hidden_dim, self._latent_dim)
+        self.fc2b = nn.Linear(self._hidden_dim, self._latent_dim)
+        self.fc3 = nn.Linear(self._latent_dim, self._hidden_dim)
+        self.fc4 = nn.Linear(self._hidden_dim, self._input_dim)
 
     def encode(self, x: 'torch.tensor') -> Tuple['torch.tensor', 'torch.tensor']:
 
