@@ -2,23 +2,26 @@ from typing import List
 import collections
 import re
 
-import torch
-import torch as T
-
 
 class SMILESTokenizer(object):
 
-    def __init__(self):
+    def __init__(self, X: List[str], n_merges: int = 16):
+        """
+        Fits tokenizer to SMILES strings, taking into account subwords
+        (frequently observed groups of characters, often functional groups)
+        using byte pair encoding (BPE)
 
-        self._vocab = {}
-        self._n_bits_per_word = 8
-
-    def fit(self, X: List[str], n_merges: int = 4):
-        '''
         Adapted from https://arxiv.org/pdf/1508.07909.pdf
-        '''
+
+        Args:
+            X (List[str]): SMILES strings to fit tokenizer
+            n_merges (int): number of merges (iterations of BPE)
+        """
 
         _words = [' '.join(smi) for smi in X]
+
+        self._best = []
+        self._p = []
 
         for i in range(n_merges):
 
@@ -27,42 +30,49 @@ class SMILESTokenizer(object):
                 symbols = word.split()
                 for i in range(len(symbols) - 1):
                     pairs[symbols[i], symbols[i + 1]] += 1
-
             best = max(pairs, key=pairs.get)
 
-            _new_words = []
             bigram = re.escape(' '.join(best))
             p = re.compile(r'(?<!\S)' + bigram + r'(?!\S)')
+
+            _new_words = []
             for word in _words:
                 _new_words.append(p.sub(''.join(best), word))
-
             _words = _new_words
 
-        self._vocab = {}
-        for word in _words:
-            chars = word.split(' ')
-            for c in chars:
-                if c not in self._vocab.keys():
-                    self._vocab[c] = 1
-                else:
-                    self._vocab[c] += 1
+            self._best.append(best)
+            self._p.append(p)
 
-    def fit_transform(self, X: List[str], n_merges: int = 4) -> 'torch.tensor':
+    def tokenize(self, X: List[str]) -> List[List[str]]:
+        """
+        Tokenize SMILES strings using pre-trained BPE vocabulary
 
-        self.fit(X, n_merges)
-        return self.transform(X)
+        Args:
+            X (List[str]): SMILES strings to tokenize
 
-    def transform(self, X: List[str]) -> 'torch.tensor':
+        Returns:
+            List[List[str]]: tokenized SMILES strings, each list element
+                represents a SMILES string; each element is a list of "words"
+                (subgroups defined by BPE) that make up each SMILES string
+        """
 
-        trf_vals = []
-        for smi in X:
-            trf_vals.append(self._tokenize(smi))
-        return trf_vals  # TODO: to torch.tensor
+        _words = [' '.join(smi) for smi in X]
 
-    def inverse_transform(self, X: 'torch.tensor') -> List[str]:
+        for i in range(len(self._p)):
+
+            _new_words = []
+            for word in _words:
+                _new_words.append(
+                    self._p[i].sub(''.join(self._best[i]), word)
+                )
+            _words = _new_words
+
+        _words = [w.split(' ') for w in _words]
+        return _words
+
+
+class SMILESEmbedder(object):
+
+    def __init__(self):
 
         return
-
-    def _tokenize(self, smiles: str):
-
-        return  # TODO: this next
