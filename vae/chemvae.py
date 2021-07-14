@@ -1,7 +1,68 @@
-from typing import Tuple
+from typing import Tuple, List
+import sys
+
 import torch
 import torch as T
 import torch.nn as nn
+from torch.utils.data import DataLoader, Subset
+from sklearn.model_selection import train_test_split
+
+from callbacks import CallbackOperator, Callback
+
+
+class Validator(Callback):
+
+    def __init__(self, loader, model, patience: int, beta: float):
+        """
+        Periodic validation using training data subset
+
+        Args:
+            loader (torch.utils.data.DataLoader): validation set
+            model (ChemVAE): model being trained
+            patience (int): if new lowest validation loss not found after `this` many epochs,
+                terminate training, set model parameters to those observed @ lowest validation loss
+        """
+
+        super().__init__()
+        self.loader = loader
+        self.model = model
+        self._best_loss = sys.maxsize
+        self._most_recent_loss = sys.maxsize
+        self._epoch_since_best = 0
+        self.best_state = model.state_dict()
+        self._patience = patience
+        self._beta = beta
+
+    def on_epoch_end(self, epoch: int) -> bool:
+        """
+        Training halted if:
+            number of epochs since last lowest valid. MAE > specified patience
+        """
+
+        valid_loss = 0.0
+        for batch in self.loader:
+            recon_x, mean, logvar = self.model(batch)
+            loss = elbo_loss(recon_x, batch, mean, logvar, self._beta)
+            valid_loss += loss.item()
+        valid_loss /= len(self.loader)
+        self._most_recent_loss = valid_loss
+        if valid_loss < self._best_loss:
+            self._best_loss = valid_loss
+            self.best_state = self.model.state_dict()
+            self._epoch_since_best = 0
+            return True
+        self._epoch_since_best += 1
+        if self._epoch_since_best > self._patience:
+            return False
+        return True
+
+    def on_train_end(self) -> bool:
+        """
+        After training, recall weights when lowest valid. MAE occurred
+        """
+
+        self.model.load_state_dict(self.best_state)
+        return True
 
 
 class ChemVAE(nn.Module):
@@ -27,11 +88,119 @@ class ChemVAE(nn.Module):
         self._hidden_dim = hidden_dim
 
         self.fc1 = nn.Linear(self._input_dim, self._hidden_dim)
-        self.fc2a = nn.Linear(self._hidden_dim, self._latent_dim)
-        self.fc2b = nn.Linear(self._hidden_dim, self._latent_dim)
-        self.fc3 = nn.Linear(self._latent_dim, self._hidden_dim)
-        self.fc4 = nn.Linear(self._hidden_dim, self._input_dim)
+        self.fc2 = nn.Linear(self._hidden_dim, self._hidden_dim)
+        self.fc3a = nn.Linear(self._hidden_dim, self._latent_dim)
+        self.fc3b = nn.Linear(self._hidden_dim, self._latent_dim)
+        self.fc4 = nn.Linear(self._latent_dim, self._hidden_dim)
+        self.fc5 = nn.Linear(self._hidden_dim, self._hidden_dim)
+        self.fc6 = nn.Linear(self._hidden_dim, self._input_dim)
+        # self.out = nn.Softmax(dim=1)
 
+    def fit(self, dataset: 'torch.utils.data.Dataset',
+            valid_size: float = 0.0,
+            patience: int = 8,
+            random_state: int = None,
+            batch_size: int = 32,
+            epochs: int = 64,
+            shuffle: bool = False,
+            beta: float = 1.0,
+            verbose: int = 0,
+            **kwargs) -> Tuple['torch.tensor', 'torch.tensor']:
+
+        CBO = CallbackOperator()
+
+        if valid_size > 0.0:
+            _validate = True
+            index_train, index_valid = train_test_split(
+                [i for i in range(len(dataset))], test_size=valid_size,
+                random_state=random_state
+            )
+            dataloader_train = DataLoader(
+                Subset(dataset, index_train), batch_size=batch_size,
+                shuffle=True
+            )
+            dataloader_valid = DataLoader(
+                Subset(dataset, index_valid), batch_size=batch_size,
+                shuffle=True
+            )
+            _validator = Validator(dataloader_valid, self, 1, patience)
+            CBO.add_cb(_validator)
+        else:
+            _validate = False
+            dataloader_train = DataLoader(
+                dataset, batch_size=batch_size, shuffle=True
+            )
+
+        optimizer = torch.optim.Adam(self.parameters(), **kwargs)
+
+        train_losses, valid_losses = [], []
+        CBO.on_train_begin()
+        for epoch in range(epochs):
+
+            if not CBO.on_epoch_begin(epoch):
+                break
+
+            if shuffle:
+                index_train, index_valid = train_test_split(
+                    [i for i in range(len(dataset))], test_size=valid_size,
+                    random_state=random_state
+                )
+                dataloader_train = DataLoader(
+                    Subset(dataset, index_train), batch_size=batch_size,
+                    shuffle=True
+                )
+                dataloader_valid = DataLoader(
+                    Subset(dataset, index_valid), batch_size=len(index_valid),
+                    shuffle=True
+                )
+
+            train_loss = 0.0
+            self.train()
+
+            for b_idx, batch in enumerate(dataloader_train):
+
+                if not CBO.on_batch_begin(b_idx):
+                    break
+
+                optimizer.zero_grad()
+                recon_x, mean, logvar = self(batch)
+
+                if not CBO.on_batch_end(b_idx):
+                    break
+                if not CBO.on_loss_begin(b_idx):
+                    break
+
+                loss = elbo_loss(recon_x, batch, mean, logvar, beta)
+                loss.backward()
+
+                if not CBO.on_loss_end(b_idx):
+                    break
+                if not CBO.on_step_begin(b_idx):
+                    break
+
+                optimizer.step()
+                train_loss += loss.item()
+
+                if not CBO.on_step_end(b_idx):
+                    break
+
+            train_loss /= len(dataloader_train)
+            if _validate:
+                valid_loss = _validator._most_recent_loss
+            else:
+                valid_loss = 0.0
+            train_losses.append(train_loss)
+            valid_losses.append(valid_loss)
+
+            if epoch % verbose == 0:
+                print(f'Epoch: {epoch} | Training Loss: {train_loss} | Valid Loss: {valid_loss}')
+
+            if not CBO.on_epoch_end(epoch):
+                break
+
+        CBO.on_train_end()
+        return train_losses, valid_losses
+    
     def encode(self, x: 'torch.tensor') -> Tuple['torch.tensor', 'torch.tensor']:
         """
         Encodes input data to latent distributions
@@ -47,8 +216,9 @@ class ChemVAE(nn.Module):
         """
 
         z = T.sigmoid(self.fc1(x))
-        mean = T.sigmoid(self.fc2a(z))
-        logvar = T.sigmoid(self.fc2b(z))
+        z = T.sigmoid(self.fc2(z))
+        mean = T.sigmoid(self.fc3a(z))
+        logvar = T.sigmoid(self.fc3b(z))
         return (mean, logvar)
 
     def decode(self, z: 'torch.tensor') -> 'torch.tensor':
@@ -63,8 +233,10 @@ class ChemVAE(nn.Module):
             torch.tensor: decoded data, shape [n_samples, n_features]
         """
 
-        z = T.sigmoid(self.fc3(z))
         z = T.sigmoid(self.fc4(z))
+        z = T.sigmoid(self.fc5(z))
+        z = T.sigmoid(self.fc6(z))
+        # z = self.out(z)
         return z
 
     @staticmethod
