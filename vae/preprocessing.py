@@ -6,6 +6,21 @@ import numpy
 import numpy as np
 
 
+def floats_to_onehot(X: 'numpy.array') -> 'numpy.array':
+
+    max_idxs = np.argmax(X, axis=2)
+    result = np.zeros((X.shape[0], X.shape[1], X.shape[2]))
+    for i in range(len(max_idxs)):
+        for j in range(len(max_idxs[0])):
+            result[i][j][max_idxs[i][j]] = 1
+    return result
+
+
+def remove_slashes(smiles: str) -> str:
+
+    return smiles.replace('\\', '').replace('/', '')
+
+
 class SMILESTokenizer(object):
 
     def __init__(self, X: List[str], n_merges: int = 16):
@@ -102,7 +117,8 @@ class SMILESEncoder(SMILESTokenizer):
         Args:
             X (List[str]): SMILES strings to train tokenizer/encoder
             max_tokens (int, optional): expected max number of tokens per
-                SMILES string; okay to over-estimate (default: 16)
+                SMILES string; okay to over-estimate, should be >= n_samples
+                (default: 16)
             **kwargs: optional arguments passed to SMILESTokenizer
         """
 
@@ -144,8 +160,14 @@ class SMILESEncoder(SMILESTokenizer):
         for i, smi in enumerate(tokenized_X):
             _sample = [[0 for _ in range(len(self.vocab) + 1)]
                        for _ in range(self._max_tokens)]
+            for s in range(len(_sample)):
+                _sample[s][0] = 1
             for j, token in enumerate(smi):
-                _sample[j][self._trf_forward[token]] = 1
+                try:
+                    _sample[j][self._trf_forward[token]] = 1
+                    _sample[j][0] = 0
+                except KeyError:
+                    continue
             results.append(_sample)
         return np.asarray(results)
 
