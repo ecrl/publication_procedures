@@ -61,13 +61,16 @@ class Autoencoder(nn.Module):
 class VariationalEncoder(nn.Module):
 
     def __init__(self, input_shape: Tuple[int, int], hidden_dim: int,
-                 latent_dim: int):
+                 latent_dim: int, n_hidden: int):
 
         super(VariationalEncoder, self).__init__()
         self._input_shape = input_shape
-        self.linear1 = nn.Linear(input_shape[0] * input_shape[1], hidden_dim)
-        self.linear2a = nn.Linear(hidden_dim, latent_dim)
-        self.linear2b = nn.Linear(hidden_dim, latent_dim)
+        self.encode = nn.ModuleList()
+        self.encode.append(nn.Linear(input_shape[0] * input_shape[1], hidden_dim))
+        for _ in range(n_hidden):
+            self.encode.append(nn.Linear(hidden_dim, hidden_dim))
+        self.mean = nn.Linear(hidden_dim, latent_dim)
+        self.variance = nn.Linear(hidden_dim, latent_dim)
 
         self.N = torch.distributions.Normal(0, 1)
         self.kl = 0.0
@@ -75,9 +78,10 @@ class VariationalEncoder(nn.Module):
     def forward(self, x: 'torch.tensor') -> 'torch.tensor':
 
         x = torch.flatten(x, start_dim=1)
-        x = F.relu(self.linear1(x))
-        mu = self.linear2a(x)
-        sigma = torch.exp(self.linear2b(x))
+        for i in range(len(self.encode)):
+            x = F.relu(self.encode[i](x))
+        mu = self.mean(x)
+        sigma = torch.exp(self.variance(x))
         z = mu + sigma * self.N.sample(mu.shape)
         self.kl = (sigma**2 + mu**2 - torch.log(sigma) - 0.5).sum()
         return z
@@ -86,10 +90,10 @@ class VariationalEncoder(nn.Module):
 class VAE(nn.Module):
 
     def __init__(self, input_shape: Tuple[int, int], hidden_dim: int,
-                 latent_dim: int):
+                 latent_dim: int, n_hidden: int = 1):
 
         super(VAE, self).__init__()
-        self.encoder = VariationalEncoder(input_shape, hidden_dim, latent_dim)
+        self.encoder = VariationalEncoder(input_shape, hidden_dim, latent_dim, n_hidden)
         self.decoder = Decoder(latent_dim, hidden_dim, input_shape)
 
     def forward(self, x: 'torch.tensor') -> 'torch.tensor':
@@ -100,10 +104,10 @@ class VAE(nn.Module):
 
 
 def train_vae(model: 'VAE', dataset: 'torch.utils.data.Dataset',
-              epochs: int = 16, batch_size=16,
-              verbose: int = 0) -> Tuple['torch.tensor', 'torch.tensor']:
+              epochs: int = 16, batch_size=16, beta: float=1.0,
+              verbose: int = 0, **kwargs) -> Tuple['torch.tensor', 'torch.tensor']:
 
-    opt = torch.optim.Adam(model.parameters(), lr=0.01)
+    opt = torch.optim.Adam(model.parameters(), **kwargs)
 
     dataloader_train = DataLoader(
         dataset, batch_size=batch_size, shuffle=True
@@ -114,7 +118,7 @@ def train_vae(model: 'VAE', dataset: 'torch.utils.data.Dataset',
         for x in dataloader_train:
             opt.zero_grad()
             x_hat = model(x)
-            loss = ((x - x_hat)**2).sum() + model.encoder.kl
+            loss = ((x - x_hat)**2).sum() + (beta * model.encoder.kl)
             loss.backward()
             opt.step()
             train_loss += loss.item()
