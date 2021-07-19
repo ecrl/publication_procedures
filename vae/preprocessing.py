@@ -109,7 +109,7 @@ class SMILESTokenizer(object):
 
 class SMILESEncoder(SMILESTokenizer):
 
-    def __init__(self, X: List[str], max_tokens: int = 16, **kwargs):
+    def __init__(self, X: List[str], **kwargs):
         """
         First tokenizes using SMILESTokenizer, then uses tokens to create
         vector space for encoding SMILES strings (one-hot vectors)
@@ -123,7 +123,7 @@ class SMILESEncoder(SMILESTokenizer):
         """
 
         super().__init__(X, **kwargs)
-        self._max_tokens = max_tokens
+        self._max_tokens = max([len(x) for x in X])
         vc = ['']
         vc.extend(self.vocab)
         self._trf_forward = dict((c, i) for i, c in enumerate(vc))
